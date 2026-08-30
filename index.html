@@ -429,14 +429,15 @@ function tplById(id){ return S.templates.find(t => t.id === id); }
 function furnitureOf(tplId){ return S.furniture.filter(f => f.template_id === tplId); }
 function footprint(f){ return f.type === "single" ? { w: 2, h: 2 } : (f.rot === "v" ? { w: 2, h: 4 } : { w: 4, h: 2 }); }
 function seatsOf(f){
-  if (f.type === "single") return [{ fid: f.id, idx: 0, x: f.x, y: f.y }];
+  const mk = (idx, x, y) => ({ fid: f.id, idx, x, y, key: f.id + ":" + idx });
+  if (f.type === "single") return [mk(0, f.x, f.y)];
   return f.rot === "v"
-    ? [{ fid: f.id, idx: 0, x: f.x, y: f.y }, { fid: f.id, idx: 1, x: f.x, y: f.y + 2 }]
-    : [{ fid: f.id, idx: 0, x: f.x, y: f.y }, { fid: f.id, idx: 1, x: f.x + 2, y: f.y }];
+    ? [mk(0, f.x, f.y), mk(1, f.x, f.y + 2)]
+    : [mk(0, f.x, f.y), mk(1, f.x + 2, f.y)];
 }
 function allSeats(tplId){
   const out = [];
-  furnitureOf(tplId).forEach(f => seatsOf(f).forEach(s => { s.key = s.fid + ":" + s.idx; out.push(s); }));
+  furnitureOf(tplId).forEach(f => seatsOf(f).forEach(s => out.push(s)));
   return out;
 }
 function overlap1D(a1, a2, b1, b2){ return Math.min(a2, b2) - Math.max(a1, b1) > 0; }
