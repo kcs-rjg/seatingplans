@@ -355,6 +355,7 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <img class="gm-photo" id="gmPhoto" alt="Pupil photo">
     <div id="gmChoices"></div>
     <div id="gmFree" class="hidden"><div class="row"><input id="gmInput" style="flex:1" placeholder="Given name is enough" autocomplete="off"><button class="btn btn-primary" id="gmSubmit">Answer</button></div></div>
+    <div class="row" style="justify-content:center; margin-top:2px"><label class="mini"><input type="checkbox" id="gmTent"> Tentative - repeat this pupil even if I am right</label></div>
     <div id="gmFeedback"></div>
   </div>
 </div></div>
@@ -1453,7 +1454,8 @@ $("phApply").addEventListener("click", async () => {
 });
 
 /* ---------- name game ---------- */
-const G = { pool: [], urls: {}, mode: "mc", repeat: true, score: 0, streak: 0, qn: 0, cur: null, lastId: null, misses: {}, timer: null, busy: false };
+const G = { pool: [], urls: {}, mode: "mc", repeat: true, score: 0, streak: 0, qn: 0, cur: null, lastId: null, misses: {}, timer: null, busy: false, bag: [] };
+function gmShuffle(a){ for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 function norm(t){ return (t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim(); }
 function lev(a, b){
   if (Math.abs(a.length - b.length) > 1) return 9;
@@ -1491,7 +1493,7 @@ $("gmStart").addEventListener("click", async () => {
   (data || []).forEach((d, i) => { if (d.signedUrl) G.urls[pool[i].id] = d.signedUrl; });
   G.pool = G.pool.filter(p => G.urls[p.id]);
   if (G.pool.length < min){ alert("Could not load enough photos - try again."); return; }
-  G.score = 0; G.streak = 0; G.qn = 0; G.misses = {}; G.lastId = null;
+  G.score = 0; G.streak = 0; G.qn = 0; G.misses = {}; G.lastId = null; G.bag = [];
   $("gmSetup").classList.add("hidden"); $("gmPlay").classList.remove("hidden");
   nextQuestion();
 });
@@ -1507,11 +1509,19 @@ function nextQuestion(){
     const due = Object.entries(G.misses).find(([id, m]) => m.due <= G.qn && id !== G.lastId);
     if (due) cur = G.pool.find(p => p.id === due[0]);
   }
-  if (!cur){
-    const opts = G.pool.filter(p => p.id !== G.lastId);
-    cur = opts[Math.floor(Math.random() * opts.length)];
+  if (cur){
+    const bi = G.bag.indexOf(cur.id);
+    if (bi > -1) G.bag.splice(bi, 1);
+  } else {
+    if (!G.bag.length){
+      G.bag = gmShuffle(G.pool.map(p => p.id));
+      if (G.bag.length > 1 && G.bag[G.bag.length - 1] === G.lastId) [G.bag[0], G.bag[G.bag.length - 1]] = [G.bag[G.bag.length - 1], G.bag[0]];
+    }
+    const id = G.bag.pop();
+    cur = G.pool.find(p => p.id === id) || G.pool[0];
   }
   G.cur = cur; G.lastId = cur.id;
+  $("gmTent").checked = false;
   $("gmScore").textContent = G.score; $("gmStreak").textContent = G.streak; $("gmQn").textContent = G.qn;
   $("gmFeedback").innerHTML = "";
   $("gmPhoto").src = G.urls[cur.id];
@@ -1519,9 +1529,8 @@ function nextQuestion(){
     $("gmChoices").classList.remove("hidden"); $("gmFree").classList.add("hidden");
     const sameClass = G.pool.filter(p => p.class_id === cur.class_id && p.id !== cur.id);
     const others = G.pool.filter(p => p.class_id !== cur.class_id);
-    const shuffle = a => { for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-    const distractors = shuffle(sameClass.slice()).concat(shuffle(others.slice())).slice(0, 3);
-    const options = shuffle([cur].concat(distractors));
+    const distractors = gmShuffle(sameClass.slice()).concat(gmShuffle(others.slice())).slice(0, 3);
+    const options = gmShuffle([cur].concat(distractors));
     $("gmChoices").innerHTML = "";
     options.forEach(p => {
       const b = document.createElement("button");
@@ -1550,10 +1559,16 @@ function answer(correct, btn){
   const p = G.cur, nm = gameNamesFor(p);
   const cls = S.classes.find(c => c.id === p.class_id);
   const clsName = cls ? cls.name : "";
+  const tentative = $("gmTent").checked;
   if (correct){
     G.streak++; G.score += 10 + 2 * Math.min(G.streak - 1, 10);
-    if (G.misses[p.id]){ G.misses[p.id].remaining--; if (G.misses[p.id].remaining <= 0) delete G.misses[p.id]; else G.misses[p.id].due = G.qn + 3 + Math.floor(Math.random() * 3); }
-    $("gmFeedback").innerHTML = `<span class="ok">Correct - ${esc(nm.full)}</span><span class="cls">${esc(clsName)}</span>`;
+    if (tentative){
+      G.misses[p.id] = { due: G.qn + 3 + Math.floor(Math.random() * 3), remaining: 2 };
+    } else if (G.misses[p.id]){
+      G.misses[p.id].remaining--;
+      if (G.misses[p.id].remaining <= 0) delete G.misses[p.id]; else G.misses[p.id].due = G.qn + 3 + Math.floor(Math.random() * 3);
+    }
+    $("gmFeedback").innerHTML = `<span class="ok">Correct - ${esc(nm.full)}</span><span class="cls">${esc(clsName)}${tentative ? " - marked for practice" : ""}</span>`;
     if (btn) btn.classList.add("right");
     $("gmPhoto").classList.add("gmPop"); setTimeout(() => $("gmPhoto").classList.remove("gmPop"), 400);
     confettiBurst();
