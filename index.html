@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.0.0/dist/tabler-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 :root{
   --dark:#05214C; --reflex:#000898; --yellow:#FAB31E; --grey:#808D9A;
@@ -84,6 +85,10 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
 .avatar.absent .circ{border-style:dashed; border-color:#B9C1C9; background:#F7F8F9;}
 .avatar.absent .circ i{color:var(--grey);}
 .avatar.picked .circ{outline:3px solid var(--yellow); outline-offset:2px;}
+.circ img{width:100%; height:100%; object-fit:cover; border-radius:50%; pointer-events:none;}
+.phRow{display:flex; align-items:center; gap:10px; margin:8px 0;}
+.phRow img{width:42px; height:56px; object-fit:cover; border-radius:4px; border:1px solid var(--line);}
+.phRow .pn{flex:1; font-size:13px;}
 .avatar .pinBadge{position:absolute; top:-6px; right:-6px; width:16px; height:16px; border-radius:50%; background:var(--yellow); display:none; align-items:center; justify-content:center;}
 .avatar .pinBadge i{font-size:10px; color:var(--dark);}
 #app.arrange .avatar.pinned .pinBadge{display:flex;}
@@ -170,6 +175,7 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <button class="btn btn-outline" id="btnMode"><i class="ti ti-pencil"></i><span>Arrange</span></button>
     <button class="btn btn-primary" id="btnShuffle"><i class="ti ti-arrows-shuffle"></i>Shuffle</button>
     <button class="btn btn-outline" id="btnPicker"><i class="ti ti-hand-finger"></i>Picker</button>
+    <button class="btn btn-quiet" id="btnPhotos"><i class="ti ti-eye"></i><span>Photos</span></button>
     <button class="btn btn-outline" id="btnSave"><i class="ti ti-device-floppy"></i>Save</button>
     <button class="btn btn-outline" id="btnPdf"><i class="ti ti-file-download"></i>PDF</button>
   </div>
@@ -199,6 +205,11 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <button class="btn btn-outline" id="cmImport">Import</button>
   </div>
   <div class="row"><textarea id="cmPaste" rows="2" style="flex:1" placeholder="Or paste rows here, then Import"></textarea></div>
+  <div class="row">
+    <input type="file" id="cmPhotoFile" accept=".pdf" style="flex:1">
+    <button class="btn btn-outline" id="cmPhotoBtn"><i class="ti ti-photo"></i>Match photos</button>
+  </div>
+  <p class="mini" style="margin-bottom:4px">Photo sheet PDF - upload after the class list; photos attach to existing pupils and re-uploading replaces them.</p>
   <table id="cmTable"></table>
   <div class="row" style="margin-top:10px">
     <button class="btn btn-quiet" id="cmAddPupil"><i class="ti ti-plus"></i>Add pupil</button>
@@ -238,6 +249,16 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
   </div>
   <div id="roomCanvasWrap"><div id="roomCanvas"></div></div>
   <div class="foot"><button class="btn btn-primary" id="rmClose">Done</button></div>
+</div></div>
+
+<div class="overlay hidden" id="photoModal"><div class="modal">
+  <h2>Match photos</h2>
+  <p class="sub">Check each photo is paired with the right pupil, then upload. Choose Skip for anyone not in this class. If two rows point at the same pupil, the later one wins.</p>
+  <div id="photoRows"></div>
+  <div class="foot">
+    <button class="btn btn-quiet" id="phCancel">Cancel</button>
+    <button class="btn btn-primary" id="phApply"><i class="ti ti-upload"></i>Upload photos</button>
+  </div>
 </div></div>
 
 <div class="overlay hidden" id="shuffleModal"><div class="modal">
@@ -320,11 +341,14 @@ const S = {
   hadSavedPlan: false,   // whether a saved live plan existed before edits
   dirty: false, mode: "view",
   pickedId: null,        // currently highlighted pupil
+  showPhotos: localStorage.getItem("showPhotos") !== "0",
+  photoUrls: {},
   editorTplId: null, editorSel: null, // room editor state
   drag: null
 };
 
 /* ---------- boot & auth ---------- */
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 function boot(){
   if (SUPABASE_URL.startsWith("YOUR_")) { $("cfgWarn").classList.remove("hidden"); return; }
   sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -358,11 +382,12 @@ async function loadAll(){
 }
 
 async function loadClass(){
-  S.pupils = []; S.rules = []; S.plan = null; S.assign = {}; S.snapshot = null; S.hadSavedPlan = false;
+  S.pupils = []; S.rules = []; S.plan = null; S.assign = {}; S.snapshot = null; S.hadSavedPlan = false; S.photoUrls = {};
   S.pickedId = null; setDirty(false);
   if (S.classId){
     S.pupils = await q(sb.from("pupils").select("*").eq("class_id", S.classId).order("given_name"), "Loading pupils");
     S.rules = await q(sb.from("rules").select("*").eq("class_id", S.classId), "Loading rules");
+    await loadPhotoUrls();
     const plans = await q(sb.from("plans").select("*").eq("class_id", S.classId).eq("is_live", true).limit(1), "Loading plan");
     S.plan = plans[0] || null;
     if (!S.plan && S.templates.length){
@@ -499,8 +524,10 @@ function avatarHTML(p, name, extra){
   const cls = ["avatar", "g-" + g];
   if (p && p.absent) cls.push("absent");
   if (extra) cls.push(extra);
+  const url = (p && S.showPhotos && S.photoUrls[p.id]) ? S.photoUrls[p.id] : null;
+  const inner = url ? `<img src="${url}" alt="" draggable="false">` : `<i class="ti ${icon}" style="font-size:${Math.round(circ * .48)}px"></i>`;
   return `<div class="${cls.join(" ")}" data-pupil="${p ? p.id : ""}">
-    <div class="circ" style="width:${circ}px;height:${circ}px"><i class="ti ${icon}" style="font-size:${Math.round(circ * .48)}px"></i><span class="pinBadge"><i class="ti ti-pin"></i></span></div>
+    <div class="circ" style="width:${circ}px;height:${circ}px">${inner}<span class="pinBadge"><i class="ti ti-pin"></i></span></div>
     <span class="nm">${esc(name || "")}</span></div>`;
 }
 function renderPlan(){
@@ -866,6 +893,8 @@ $("cmNewClass").addEventListener("click", async () => {
 $("cmDelClass").addEventListener("click", async () => {
   const cls = S.classes.find(c => c.id === S.classId); if (!cls) return;
   if (!confirm(`Delete class "${cls.name}" and all of its pupils and plans? This cannot be undone.`)) return;
+  const paths = S.pupils.filter(p => p.photo_path).map(p => p.photo_path);
+  if (paths.length) await sb.storage.from("photos").remove(paths);
   await q(sb.from("classes").delete().eq("id", cls.id), "Deleting class");
   S.classId = null; await loadAll(); renderClassModal();
 });
@@ -893,6 +922,7 @@ function renderClassModal(){
     }));
     tr.querySelector("button").addEventListener("click", async () => {
       if (!confirm(`Remove ${p.given_name}?`)) return;
+      if (p.photo_path) await sb.storage.from("photos").remove([p.photo_path]);
       await q(sb.from("pupils").delete().eq("id", p.id), "Removing pupil");
       S.pupils = S.pupils.filter(x => x.id !== p.id); renderClassModal();
     });
@@ -971,6 +1001,8 @@ async function applyImport(rows, adds, removes){
     S.pupils = out;
   } else {
     if (removes.length){
+      const paths = removes.filter(p => p.photo_path).map(p => p.photo_path);
+      if (paths.length) await sb.storage.from("photos").remove(paths);
       await q(sb.from("pupils").delete().in("id", removes.map(p => p.id)), "Removing pupils");
       const gone = new Set(removes.map(p => p.id));
       S.pupils = S.pupils.filter(p => !gone.has(p.id));
@@ -1186,6 +1218,8 @@ async function exportPdf(archivedPlan){
   fmEl.style.cssText = `left:${fm.x * cellMm}mm;top:${fm.y * cellMm}mm;width:${fm.w * cellMm}mm;height:${cellMm}mm;font-size:8pt`;
   fmEl.textContent = "Whiteboard - front";
   g.appendChild(fmEl);
+  let withPhotos = false;
+  if (Object.keys(S.photoUrls).length) withPhotos = confirm("Include pupil photos in the PDF?\n\nOK = with photos, Cancel = names only");
   furnitureOf(tpl.id).forEach(f => {
     const fp = footprint(f);
     const t = document.createElement("div");
@@ -1193,12 +1227,14 @@ async function exportPdf(archivedPlan){
     t.style.cssText = `left:${f.x * cellMm}mm;top:${f.y * cellMm}mm;width:${fp.w * cellMm}mm;height:${fp.h * cellMm}mm;border-width:0.4mm`;
     seatsOf(f).forEach(s => {
       const seat = document.createElement("div"); seat.className = "seat";
-      const a = assign[s.key = s.fid + ":" + s.idx];
+      const a = assign[s.key];
       const p = a ? S.pupils.find(x => x.id === a.pupilId) : null;
       if (p){
         const g2 = p.gender || "N";
         const icon = g2 === "M" ? "ti-man" : g2 === "F" ? "ti-woman" : "ti-user";
-        seat.innerHTML = `<div class="avatar g-${g2}"><div class="circ" style="width:8mm;height:8mm"><i class="ti ${icon}" style="font-size:4mm"></i></div><span class="nm">${esc(names[p.id])}</span></div>`;
+        const url = withPhotos ? S.photoUrls[p.id] : null;
+        const inner = url ? `<img src="${url}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">` : `<i class="ti ${icon}" style="font-size:4mm"></i>`;
+        seat.innerHTML = `<div class="avatar g-${g2}"><div class="circ" style="width:9mm;height:9mm">${inner}</div><span class="nm">${esc(names[p.id])}</span></div>`;
       } else {
         seat.innerHTML = '<div class="emptySeat" style="width:6mm;height:6mm"></div>';
       }
@@ -1206,6 +1242,7 @@ async function exportPdf(archivedPlan){
     });
     g.appendChild(t);
   });
+  await Promise.all(Array.from(g.querySelectorAll("img")).map(im => im.decode().catch(() => {})));
   window.print();
 }
 
@@ -1216,11 +1253,163 @@ $("stSignOut").addEventListener("click", async () => { await sb.auth.signOut(); 
 $("stReset").addEventListener("click", async () => {
   if ($("stResetText").value !== "RESET"){ alert('Type RESET (in capitals) to confirm.'); return; }
   if (!confirm("Final check: delete every class, pupil, plan, rule, and room template?")) return;
+  const objs = await sb.storage.from("photos").list("", { limit: 1000 });
+  if (objs.data && objs.data.length) await sb.storage.from("photos").remove(objs.data.map(o => o.name));
   for (const tbl of ["assignments", "plans", "rules", "pupils", "furniture", "room_templates", "classes"]){
     await q(sb.from(tbl).delete().not("id", "is", null), "Resetting " + tbl);
   }
   $("stResetText").value = ""; hide("settingsModal");
   S.classId = null; await loadAll();
+});
+
+/* ---------- photos ---------- */
+function updatePhotosBtn(){
+  $("btnPhotos").innerHTML = S.showPhotos
+    ? '<i class="ti ti-eye"></i><span>Photos on</span>'
+    : '<i class="ti ti-eye-off"></i><span>Photos off</span>';
+}
+updatePhotosBtn();
+$("btnPhotos").addEventListener("click", () => {
+  S.showPhotos = !S.showPhotos;
+  localStorage.setItem("showPhotos", S.showPhotos ? "1" : "0");
+  updatePhotosBtn(); renderPlan();
+});
+async function loadPhotoUrls(){
+  S.photoUrls = {};
+  const withP = S.pupils.filter(p => p.photo_path);
+  if (!withP.length) return;
+  const { data, error } = await sb.storage.from("photos").createSignedUrls(withP.map(p => p.photo_path), 7200);
+  if (error || !data) return;
+  data.forEach((d, i) => { if (d.signedUrl) S.photoUrls[withP[i].id] = d.signedUrl; });
+}
+async function extractPhotosFromPdf(file){
+  if (!window.pdfjsLib) throw new Error("The PDF library did not load - check your connection.");
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const out = [];
+  const mul = (m, n) => [m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5]];
+  for (let pn = 1; pn <= pdf.numPages; pn++){
+    const page = await pdf.getPage(pn);
+    const view = page.getViewport({ scale: 1 });
+    const ops = await page.getOperatorList();
+    const images = [];
+    const stack = []; let ctm = [1, 0, 0, 1, 0, 0];
+    for (let i = 0; i < ops.fnArray.length; i++){
+      const fn = ops.fnArray[i], args = ops.argsArray[i];
+      if (fn === pdfjsLib.OPS.save) stack.push(ctm.slice());
+      else if (fn === pdfjsLib.OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+      else if (fn === pdfjsLib.OPS.transform) ctm = mul(ctm, args);
+      else if (fn === pdfjsLib.OPS.paintImageXObject){
+        const w = Math.abs(ctm[0]), hgt = Math.abs(ctm[3]);
+        if (w < 20 || hgt < 20) continue;
+        images.push({ id: args[0], x: ctm[4], yTop: view.height - (ctm[5] + hgt), w, h: hgt });
+      }
+    }
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it => ({ x: it.transform[4], y: view.height - it.transform[5], str: it.str })).filter(it => it.str.trim());
+    for (const im of images){
+      const band = items.filter(t => t.x > im.x + im.w && t.y > im.yTop - 8 && t.y < im.yTop + im.h);
+      band.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      let name = "";
+      if (band.length){
+        const y0 = band[0].y;
+        name = band.filter(t => Math.abs(t.y - y0) < 3).map(t => t.str).join(" ").replace(/\s+/g, " ").trim();
+      }
+      const obj = await new Promise((res, rej) => { try { page.objs.get(im.id, res); } catch (e){ rej(e); } });
+      if (!obj) continue;
+      const cnv = document.createElement("canvas");
+      const ctx = cnv.getContext("2d");
+      if (obj.bitmap){
+        cnv.width = obj.width; cnv.height = obj.height;
+        ctx.drawImage(obj.bitmap, 0, 0);
+      } else if (obj.data){
+        cnv.width = obj.width; cnv.height = obj.height;
+        const rgba = new Uint8ClampedArray(obj.width * obj.height * 4);
+        const d = obj.data, ch = d.length / (obj.width * obj.height);
+        for (let px = 0; px < obj.width * obj.height; px++){
+          if (ch >= 3){ rgba[px*4] = d[px*ch]; rgba[px*4+1] = d[px*ch+1]; rgba[px*4+2] = d[px*ch+2]; }
+          else { rgba[px*4] = rgba[px*4+1] = rgba[px*4+2] = d[px]; }
+          rgba[px*4+3] = 255;
+        }
+        ctx.putImageData(new ImageData(rgba, obj.width, obj.height), 0, 0);
+      } else continue;
+      out.push({ name, canvas: cnv });
+    }
+  }
+  return out;
+}
+function matchPupil(name){
+  const n = (name || "").toLowerCase().trim();
+  if (!n) return null;
+  let p = S.pupils.find(x => (x.full_name || "").toLowerCase().trim() === n);
+  if (p) return p;
+  const parts = n.split(/\s+/), first = parts[0], last = parts[parts.length - 1];
+  const lastOf = x => ((x.surname || "").toLowerCase().trim().split(/\s+/).pop() || "");
+  p = S.pupils.find(x => x.given_name.toLowerCase() === first && lastOf(x) === last);
+  if (p) return p;
+  const cands = S.pupils.filter(x => lastOf(x) === last);
+  return cands.length === 1 ? cands[0] : null;
+}
+let pendingPhotos = null;
+$("cmPhotoBtn").addEventListener("click", async () => {
+  if (!S.classId || !S.pupils.length){ alert("Import the class list first - photos attach to existing pupils."); return; }
+  const f = $("cmPhotoFile").files[0];
+  if (!f){ alert("Choose the photo sheet PDF first."); return; }
+  $("cmPhotoBtn").disabled = true;
+  try {
+    const shots = await extractPhotosFromPdf(f);
+    if (!shots.length){ alert("No photos were found in that PDF."); return; }
+    openPhotoReview(shots);
+  } catch (err){ alert("Could not read that PDF: " + err.message); }
+  finally { $("cmPhotoBtn").disabled = false; }
+});
+function openPhotoReview(shots){
+  pendingPhotos = shots;
+  const names = displayMap();
+  const rows = $("photoRows"); rows.innerHTML = "";
+  shots.forEach((sh, i) => {
+    const m = matchPupil(sh.name);
+    const row = document.createElement("div"); row.className = "phRow";
+    const thumb = document.createElement("canvas");
+    const tw = 42, th = 56; thumb.width = tw; thumb.height = th;
+    thumb.getContext("2d").drawImage(sh.canvas, 0, 0, tw, th);
+    const img = document.createElement("img"); img.src = thumb.toDataURL("image/jpeg", 0.8);
+    row.appendChild(img);
+    const pn = document.createElement("span"); pn.className = "pn"; pn.textContent = sh.name || "(no name found)";
+    row.appendChild(pn);
+    const sel = document.createElement("select"); sel.dataset.idx = i;
+    sel.innerHTML = '<option value="">Skip</option>' + S.pupils.map(p => `<option value="${p.id}">${esc(names[p.id])}</option>`).join("");
+    if (m) sel.value = m.id;
+    row.appendChild(sel);
+    rows.appendChild(row);
+  });
+  show("photoModal");
+}
+$("phCancel").addEventListener("click", () => { pendingPhotos = null; hide("photoModal"); });
+$("phApply").addEventListener("click", async () => {
+  if (!pendingPhotos) return;
+  $("phApply").disabled = true;
+  try {
+    const sels = Array.from($("photoRows").querySelectorAll("select"));
+    let done = 0;
+    for (const sel of sels){
+      const pid = sel.value; if (!pid) continue;
+      const src = pendingPhotos[+sel.dataset.idx].canvas;
+      const th = 192, tw = Math.round(src.width * th / src.height);
+      const c2 = document.createElement("canvas"); c2.width = tw; c2.height = th;
+      c2.getContext("2d").drawImage(src, 0, 0, tw, th);
+      const blob = await new Promise(res => c2.toBlob(res, "image/jpeg", 0.82));
+      const path = pid + ".jpg";
+      const { error } = await sb.storage.from("photos").upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+      if (error){ alert("Upload failed: " + error.message); break; }
+      await q(sb.from("pupils").update({ photo_path: path }).eq("id", pid), "Saving photo");
+      const p = S.pupils.find(x => x.id === pid); if (p) p.photo_path = path;
+      done++;
+    }
+    await loadPhotoUrls();
+    pendingPhotos = null; hide("photoModal");
+    renderPlan(); flashHint(done + " photo(s) uploaded.");
+  } finally { $("phApply").disabled = false; }
 });
 
 /* ---------- modal helpers ---------- */
