@@ -365,6 +365,10 @@ async function loadClass(){
     S.rules = await q(sb.from("rules").select("*").eq("class_id", S.classId), "Loading rules");
     const plans = await q(sb.from("plans").select("*").eq("class_id", S.classId).eq("is_live", true).limit(1), "Loading plan");
     S.plan = plans[0] || null;
+    if (!S.plan && S.templates.length){
+      const made = await q(sb.from("plans").insert({ class_id: S.classId, template_id: S.templates[0].id, name: "Live", is_live: true }).select(), "Creating plan");
+      S.plan = made[0];
+    }
     if (S.plan){
       const rows = await q(sb.from("assignments").select("*").eq("plan_id", S.plan.id), "Loading seats");
       rows.forEach(r => { S.assign[r.furniture_id + ":" + r.seat_index] = { pupilId: r.pupil_id, pinned: r.pinned }; });
@@ -472,7 +476,7 @@ function renderRoomSelect(){
 }
 $("roomSelect").addEventListener("change", async e => {
   if (!S.plan){ const p = await ensurePlan(); if (!p) return; }
-  if (S.plan.template_id === e.target.value) return;
+  if (S.plan.template_id === e.target.value){ renderPlan(); return; }
   if (Object.keys(S.assign).length && !confirm("Changing room clears the current seat assignments (pupils return to the tray). Continue?")){
     e.target.value = S.plan.template_id; return;
   }
@@ -501,8 +505,8 @@ function avatarHTML(p, name, extra){
 function renderPlan(){
   const grid = $("planGrid"); grid.innerHTML = "";
   const tpl = S.plan ? tplById(S.plan.template_id) : null;
-  if (!S.classId){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Create a class to begin (people icon, top right)."; return; }
-  if (!tpl){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Choose or create a room layout (grid icon, top right)."; return; }
+  if (!S.classId){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Create a class to begin (people icon, top right)."; renderTray(); return; }
+  if (!tpl){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Choose or create a room layout (grid icon, top right)."; renderTray(); return; }
   const cell = cellSize(tpl); window.__cell = cell;
   grid.style.width = tpl.grid_w * cell + "px";
   grid.style.height = tpl.grid_h * cell + "px";
@@ -989,7 +993,7 @@ $("btnRooms").addEventListener("click", () => {
   S.editorSel = null;
   renderRoomModal(); show("roomModal");
 });
-$("rmClose").addEventListener("click", async () => { hide("roomModal"); renderRoomSelect(); renderPlan(); });
+$("rmClose").addEventListener("click", async () => { hide("roomModal"); if (!S.plan && S.classId && S.templates.length) await ensurePlan(); renderRoomSelect(); renderPlan(); });
 $("rmSel").addEventListener("change", e => { S.editorTplId = e.target.value || null; S.editorSel = null; renderRoomModal(); });
 $("rmNew").addEventListener("click", async () => {
   const name = prompt("Room name (e.g. C24):"); if (!name) return;
