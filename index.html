@@ -127,6 +127,25 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
 
 #hint{padding:5px 18px; font-size:11px; color:var(--grey); border-top:1px solid var(--line); flex:0 0 auto;}
 
+#gameOverlay .modal{width:440px; text-align:center; position:relative; overflow:hidden;}
+#gmStats{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--grey); margin-bottom:12px;}
+#gmStats b{color:var(--dark); font-weight:500; font-size:14px;}
+.gm-photo{width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid var(--dark); margin:6px auto 14px; display:block;}
+#gmChoices button{display:block; width:100%; margin:7px 0; padding:10px; border:1px solid var(--reflex); color:var(--reflex); background:#fff; border-radius:6px; font-size:14px;}
+#gmChoices button:hover{background:#F3F4FC;}
+#gmChoices button.right{background:var(--reflex); color:#fff;}
+#gmChoices button.wrong{border-color:#B3261E; color:#B3261E;}
+#gmFeedback{min-height:38px; font-size:14px; margin-top:10px;}
+#gmFeedback .ok{color:var(--reflex); font-weight:500;}
+#gmFeedback .no{color:#B3261E; font-weight:500;}
+#gmFeedback .cls{display:block; font-size:12px; color:var(--grey);}
+.gmShake{animation:gmShake .4s;}
+@keyframes gmShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+.gmPop{animation:gmPop .35s;}
+@keyframes gmPop{0%{transform:scale(1)}50%{transform:scale(1.08)}100%{transform:scale(1)}}
+.confetti{position:absolute; width:9px; height:9px; top:38%; left:50%; border-radius:2px; pointer-events:none; animation:confetti .9s ease-out forwards;}
+@keyframes confetti{0%{transform:translate(0,0) rotate(0); opacity:1}100%{transform:translate(var(--dx), var(--dy)) rotate(540deg); opacity:0}}
+
 #printArea{display:none;}
 @media print{
   @page{size:A4 landscape; margin:10mm;}
@@ -161,6 +180,7 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <span class="brand">Seating plans</span>
     <div id="classChips"></div>
     <div class="hicons">
+      <button class="hicon" id="btnGame" title="Name game"><i class="ti ti-device-gamepad-2"></i></button>
       <button class="hicon" id="btnClasses" title="Classes and pupils"><i class="ti ti-users"></i></button>
       <button class="hicon" id="btnRooms" title="Room layouts"><i class="ti ti-layout-grid"></i></button>
       <button class="hicon" id="btnArchive" title="Archive"><i class="ti ti-archive"></i></button>
@@ -317,6 +337,26 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <button class="btn btn-outline" id="pickClose">Close</button>
   </div>
   <div id="pickMeta"><span id="pickCount"></span><button class="btn btn-quiet" id="pickReset"><i class="ti ti-refresh"></i>Reset round</button></div>
+</div></div>
+
+<div class="overlay hidden" id="gameOverlay"><div class="modal">
+  <div id="gmSetup">
+    <h2>Name game</h2>
+    <p class="sub">You are shown a photo and asked for the name. Only pupils with photos are included.</p>
+    <div class="row"><span class="lab" style="width:70px;text-align:left">Pupils</span><select id="gmScope" style="flex:1"></select></div>
+    <div class="row"><span class="lab" style="width:70px;text-align:left">Difficulty</span>
+      <label><input type="radio" name="gmMode" value="mc" checked> Multiple choice</label>
+      <label style="margin-left:10px"><input type="radio" name="gmMode" value="text"> Type the name</label></div>
+    <div class="row"><label style="margin-left:78px"><input type="checkbox" id="gmRepeat" checked> Repeat my mistakes until learned</label></div>
+    <div class="foot"><button class="btn btn-quiet" id="gmClose">Close</button><button class="btn btn-primary" id="gmStart"><i class="ti ti-player-play"></i>Start</button></div>
+  </div>
+  <div id="gmPlay" class="hidden">
+    <div id="gmStats"><span>Score <b id="gmScore">0</b></span><span>Streak <b id="gmStreak">0</b></span><span>Question <b id="gmQn">1</b></span><button class="btn btn-quiet" id="gmEnd">End</button></div>
+    <img class="gm-photo" id="gmPhoto" alt="Pupil photo">
+    <div id="gmChoices"></div>
+    <div id="gmFree" class="hidden"><div class="row"><input id="gmInput" style="flex:1" placeholder="Given name is enough" autocomplete="off"><button class="btn btn-primary" id="gmSubmit">Answer</button></div></div>
+    <div id="gmFeedback"></div>
+  </div>
 </div></div>
 
 <div id="printArea"><div class="ph"><span id="printTitle"></span><span class="meta" id="printMeta"></span></div><div id="printGrid"></div></div>
@@ -1411,6 +1451,137 @@ $("phApply").addEventListener("click", async () => {
     renderPlan(); flashHint(done + " photo(s) uploaded.");
   } finally { $("phApply").disabled = false; }
 });
+
+/* ---------- name game ---------- */
+const G = { pool: [], urls: {}, mode: "mc", repeat: true, score: 0, streak: 0, qn: 0, cur: null, lastId: null, misses: {}, timer: null, busy: false };
+function norm(t){ return (t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim(); }
+function lev(a, b){
+  if (Math.abs(a.length - b.length) > 1) return 9;
+  const m = a.length, n = b.length, d = [];
+  for (let i = 0; i <= m; i++) d[i] = [i];
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++)
+    d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+  return d[m][n];
+}
+$("btnGame").addEventListener("click", async () => {
+  const scope = $("gmScope");
+  scope.innerHTML = '<option value="">All classes</option>' + S.classes.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  $("gmSetup").classList.remove("hidden"); $("gmPlay").classList.add("hidden");
+  show("gameOverlay");
+});
+$("gmClose").addEventListener("click", () => { clearTimeout(G.timer); hide("gameOverlay"); });
+$("gmEnd").addEventListener("click", () => {
+  clearTimeout(G.timer);
+  $("gmPlay").classList.add("hidden"); $("gmSetup").classList.remove("hidden");
+  alert(`Final score: ${G.score} after ${G.qn} question(s).`);
+});
+$("gmStart").addEventListener("click", async () => {
+  G.mode = document.querySelector('input[name=gmMode]:checked').value;
+  G.repeat = $("gmRepeat").checked;
+  const classId = $("gmScope").value || null;
+  let query = sb.from("pupils").select("*").not("photo_path", "is", null);
+  if (classId) query = query.eq("class_id", classId);
+  const pool = await q(query, "Loading pupils");
+  const min = G.mode === "mc" ? 4 : 2;
+  if (pool.length < min){ alert(`Need at least ${min} pupils with photos${classId ? " in that class" : ""}. Upload photo sheets first.`); return; }
+  G.pool = pool;
+  const { data } = await sb.storage.from("photos").createSignedUrls(pool.map(p => p.photo_path), 7200);
+  G.urls = {};
+  (data || []).forEach((d, i) => { if (d.signedUrl) G.urls[pool[i].id] = d.signedUrl; });
+  G.pool = G.pool.filter(p => G.urls[p.id]);
+  if (G.pool.length < min){ alert("Could not load enough photos - try again."); return; }
+  G.score = 0; G.streak = 0; G.qn = 0; G.misses = {}; G.lastId = null;
+  $("gmSetup").classList.add("hidden"); $("gmPlay").classList.remove("hidden");
+  nextQuestion();
+});
+function gameNamesFor(p){
+  const s = (p.surname || "").trim();
+  return { display: p.given_name + (s ? " " + s.split(/\s+/).pop().charAt(0).toUpperCase() + "." : ""), full: p.given_name + (s ? " " + s : "") };
+}
+function nextQuestion(){
+  clearTimeout(G.timer); G.busy = false;
+  G.qn++;
+  let cur = null;
+  if (G.repeat){
+    const due = Object.entries(G.misses).find(([id, m]) => m.due <= G.qn && id !== G.lastId);
+    if (due) cur = G.pool.find(p => p.id === due[0]);
+  }
+  if (!cur){
+    const opts = G.pool.filter(p => p.id !== G.lastId);
+    cur = opts[Math.floor(Math.random() * opts.length)];
+  }
+  G.cur = cur; G.lastId = cur.id;
+  $("gmScore").textContent = G.score; $("gmStreak").textContent = G.streak; $("gmQn").textContent = G.qn;
+  $("gmFeedback").innerHTML = "";
+  $("gmPhoto").src = G.urls[cur.id];
+  if (G.mode === "mc"){
+    $("gmChoices").classList.remove("hidden"); $("gmFree").classList.add("hidden");
+    const sameClass = G.pool.filter(p => p.class_id === cur.class_id && p.id !== cur.id);
+    const others = G.pool.filter(p => p.class_id !== cur.class_id);
+    const shuffle = a => { for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+    const distractors = shuffle(sameClass.slice()).concat(shuffle(others.slice())).slice(0, 3);
+    const options = shuffle([cur].concat(distractors));
+    $("gmChoices").innerHTML = "";
+    options.forEach(p => {
+      const b = document.createElement("button");
+      b.textContent = gameNamesFor(p).full;
+      b.addEventListener("click", () => { if (!G.busy) answer(p.id === G.cur.id, b); });
+      $("gmChoices").appendChild(b);
+    });
+  } else {
+    $("gmChoices").classList.add("hidden"); $("gmFree").classList.remove("hidden");
+    $("gmInput").value = ""; $("gmInput").focus();
+  }
+}
+$("gmSubmit").addEventListener("click", submitFree);
+$("gmInput").addEventListener("keydown", e => { if (e.key === "Enter") submitFree(); });
+function submitFree(){
+  if (G.busy) return;
+  const raw = norm($("gmInput").value);
+  if (!raw) return;
+  const p = G.cur, nm = gameNamesFor(p);
+  const given = norm(p.given_name);
+  const ok = raw === given || raw === norm(nm.full) || raw === norm(nm.display).replace(/[^a-z0-9 ]/g, "") || lev(raw, given) <= 1;
+  answer(ok);
+}
+function answer(correct, btn){
+  G.busy = true;
+  const p = G.cur, nm = gameNamesFor(p);
+  const cls = S.classes.find(c => c.id === p.class_id);
+  const clsName = cls ? cls.name : "";
+  if (correct){
+    G.streak++; G.score += 10 + 2 * Math.min(G.streak - 1, 10);
+    if (G.misses[p.id]){ G.misses[p.id].remaining--; if (G.misses[p.id].remaining <= 0) delete G.misses[p.id]; else G.misses[p.id].due = G.qn + 3 + Math.floor(Math.random() * 3); }
+    $("gmFeedback").innerHTML = `<span class="ok">Correct - ${esc(nm.full)}</span><span class="cls">${esc(clsName)}</span>`;
+    if (btn) btn.classList.add("right");
+    $("gmPhoto").classList.add("gmPop"); setTimeout(() => $("gmPhoto").classList.remove("gmPop"), 400);
+    confettiBurst();
+  } else {
+    G.streak = 0; G.score = Math.max(0, G.score - 5);
+    G.misses[p.id] = { due: G.qn + 3 + Math.floor(Math.random() * 3), remaining: 2 };
+    $("gmFeedback").innerHTML = `<span class="no">It is ${esc(nm.full)}</span><span class="cls">${esc(clsName)}</span>`;
+    if (btn) btn.classList.add("wrong");
+    if (G.mode === "mc") Array.from($("gmChoices").children).forEach(b => { if (b.textContent === nm.full) b.classList.add("right"); });
+    const card = $("gameOverlay").querySelector(".modal");
+    card.classList.add("gmShake"); setTimeout(() => card.classList.remove("gmShake"), 450);
+  }
+  $("gmScore").textContent = G.score; $("gmStreak").textContent = G.streak;
+  G.timer = setTimeout(nextQuestion, correct ? 1100 : 1900);
+}
+function confettiBurst(){
+  const card = $("gameOverlay").querySelector(".modal");
+  const colours = ["#FAB31E", "#000898", "#05214C", "#808D9A"];
+  for (let i = 0; i < 22; i++){
+    const c = document.createElement("div");
+    c.className = "confetti";
+    c.style.background = colours[i % colours.length];
+    c.style.setProperty("--dx", (Math.random() * 320 - 160) + "px");
+    c.style.setProperty("--dy", (Math.random() * -260 - 30) + "px");
+    card.appendChild(c);
+    setTimeout(() => c.remove(), 950);
+  }
+}
 
 /* ---------- modal helpers ---------- */
 function show(id){ $(id).classList.remove("hidden"); }
