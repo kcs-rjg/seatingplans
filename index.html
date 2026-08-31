@@ -190,6 +190,9 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
   <div id="toolbar">
     <span class="lab">Room</span>
     <select id="roomSelect"></select>
+    <button class="btn btn-quiet" id="btnZoomOut" title="Zoom out"><i class="ti ti-zoom-out"></i></button>
+    <button class="btn btn-quiet" id="btnZoomFit" title="Fit to window">Fit</button>
+    <button class="btn btn-quiet" id="btnZoomIn" title="Zoom in"><i class="ti ti-zoom-in"></i></button>
     <span id="dirtyDot" title="Unsaved changes"></span>
     <div class="spacer"></div>
     <button class="btn btn-outline" id="btnMode"><i class="ti ti-pencil"></i><span>Arrange</span></button>
@@ -383,6 +386,7 @@ const S = {
   dirty: false, mode: "view",
   pickedId: null,        // currently highlighted pupil
   showPhotos: localStorage.getItem("showPhotos") !== "0",
+  zoom: 1,
   photoUrls: {},
   editorTplId: null, editorSel: null, // room editor state
   drag: null
@@ -556,8 +560,12 @@ $("roomSelect").addEventListener("change", async e => {
 function cellSize(tpl){
   const wrap = $("planWrap");
   const availW = wrap.clientWidth - 34, availH = wrap.clientHeight - 34;
-  return Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(Math.min(availW / tpl.grid_w, availH / tpl.grid_h))));
+  const fit = Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(Math.min(availW / tpl.grid_w, availH / tpl.grid_h))));
+  return Math.max(12, Math.min(96, Math.round(fit * S.zoom)));
 }
+$("btnZoomIn").addEventListener("click", () => { S.zoom = Math.min(3, S.zoom * 1.2); renderPlan(); });
+$("btnZoomOut").addEventListener("click", () => { S.zoom = Math.max(0.4, S.zoom / 1.2); renderPlan(); });
+$("btnZoomFit").addEventListener("click", () => { S.zoom = 1; renderPlan(); });
 function avatarHTML(p, name, extra){
   const circ = Math.max(24, Math.min(34, window.__cell || 30));
   const g = p ? (p.gender || "N") : "N";
@@ -1305,6 +1313,7 @@ $("stReset").addEventListener("click", async () => {
 
 /* ---------- photos ---------- */
 function updatePhotosBtn(){
+  $("btnPhotos").className = "btn " + (S.showPhotos ? "btn-outline" : "btn-quiet");
   $("btnPhotos").innerHTML = S.showPhotos
     ? '<i class="ti ti-eye"></i><span>Photos on</span>'
     : '<i class="ti ti-eye-off"></i><span>Photos off</span>';
