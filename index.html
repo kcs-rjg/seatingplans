@@ -567,7 +567,10 @@ $("btnZoomIn").addEventListener("click", () => { S.zoom = Math.min(3, S.zoom * 1
 $("btnZoomOut").addEventListener("click", () => { S.zoom = Math.max(0.4, S.zoom / 1.2); renderPlan(); });
 $("btnZoomFit").addEventListener("click", () => { S.zoom = 1; renderPlan(); });
 function avatarHTML(p, name, extra){
-  const circ = Math.max(24, Math.min(34, window.__cell || 30));
+  const cell = window.__cell || 30;
+  const circ = Math.max(20, Math.min(84, Math.round(cell * 0.62)));
+  const fs = Math.max(9, Math.min(20, Math.round(cell * 0.24)));
+  const badge = Math.max(12, Math.min(26, Math.round(circ * 0.42)));
   const g = p ? (p.gender || "N") : "N";
   const icon = g === "M" ? "ti-man" : g === "F" ? "ti-woman" : "ti-user";
   const cls = ["avatar", "g-" + g];
@@ -576,8 +579,8 @@ function avatarHTML(p, name, extra){
   const url = (p && S.showPhotos && S.photoUrls[p.id]) ? S.photoUrls[p.id] : null;
   const inner = url ? `<img src="${url}" alt="" draggable="false">` : `<i class="ti ${icon}" style="font-size:${Math.round(circ * .48)}px"></i>`;
   return `<div class="${cls.join(" ")}" data-pupil="${p ? p.id : ""}">
-    <div class="circ" style="width:${circ}px;height:${circ}px">${inner}<span class="pinBadge"><i class="ti ti-pin"></i></span></div>
-    <span class="nm">${esc(name || "")}</span></div>`;
+    <div class="circ" style="width:${circ}px;height:${circ}px">${inner}<span class="pinBadge" style="width:${badge}px;height:${badge}px;top:-${Math.round(badge * .4)}px;right:-${Math.round(badge * .4)}px"><i class="ti ti-pin" style="font-size:${Math.round(badge * .6)}px"></i></span></div>
+    <span class="nm" style="font-size:${fs}px">${esc(name || "")}</span></div>`;
 }
 function renderPlan(){
   const grid = $("planGrid"); grid.innerHTML = "";
@@ -608,7 +611,7 @@ function renderPlan(){
       if (p){
         seat.innerHTML = avatarHTML(p, names[p.id], (a.pinned ? "pinned " : "") + (S.pickedId === p.id ? "picked" : ""));
       } else {
-        const d = Math.max(22, Math.min(32, cell - 2));
+        const d = Math.max(18, Math.min(76, Math.round(cell * 0.55)));
         seat.innerHTML = `<div class="emptySeat" style="width:${d}px;height:${d}px"></div>`;
       }
       t.appendChild(seat);
@@ -619,6 +622,8 @@ function renderPlan(){
 }
 function renderTray(names){
   names = names || displayMap();
+  const saved = window.__cell;
+  window.__cell = Math.min(saved || 30, 52);
   const seated = new Set(Object.values(S.assign).map(a => a.pupilId));
   const list = $("trayList"); list.innerHTML = "";
   S.pupils.filter(p => !seated.has(p.id)).forEach(p => {
@@ -627,6 +632,7 @@ function renderTray(names){
     holder.innerHTML = avatarHTML(p, names[p.id]);
     list.appendChild(holder);
   });
+  window.__cell = saved;
 }
 function hint(){
   $("hint").textContent = S.mode === "arrange"
