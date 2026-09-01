@@ -64,6 +64,10 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
 #main{flex:1; display:flex; min-height:0;}
 #planWrap{flex:1; overflow:auto; padding:16px; position:relative;}
 #planGrid{position:relative; margin:0 auto; background-image:linear-gradient(var(--faint) 1px, transparent 1px), linear-gradient(90deg, var(--faint) 1px, transparent 1px); border:1px solid var(--faint);}
+#planGrid.flipped{transform:rotate(180deg);}
+#planGrid.flipped .avatar, #planGrid.flipped .frontMarker{transform:rotate(180deg);}
+#printGrid.rot{transform:rotate(180deg);}
+#printGrid.rot .avatar, #printGrid.rot .frontMarker{transform:rotate(180deg);}
 #tray{width:150px; border-left:1px solid var(--line); padding:14px 10px; overflow-y:auto; flex:0 0 auto;}
 #tray h3{font-size:12px; letter-spacing:.08em; color:var(--grey); font-weight:400; margin-bottom:10px;}
 #tray .trayHint{font-size:11px; color:#B9C1C9; margin-top:8px;}
@@ -193,6 +197,7 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
     <button class="btn btn-quiet" id="btnZoomOut" title="Zoom out"><i class="ti ti-zoom-out"></i></button>
     <button class="btn btn-quiet" id="btnZoomFit" title="Fit to window">Fit</button>
     <button class="btn btn-quiet" id="btnZoomIn" title="Zoom in"><i class="ti ti-zoom-in"></i></button>
+    <button class="btn btn-quiet" id="btnFlip" title="Rotate the plan so the board is at the bottom (hold-to-chest view)"><i class="ti ti-rotate-2"></i><span>Flip</span></button>
     <span id="dirtyDot" title="Unsaved changes"></span>
     <div class="spacer"></div>
     <button class="btn btn-outline" id="btnMode"><i class="ti ti-pencil"></i><span>Arrange</span></button>
@@ -342,6 +347,13 @@ header .hicon:hover{color:#fff; background:rgba(255,255,255,.08);}
   <div id="pickMeta"><span id="pickCount"></span><button class="btn btn-quiet" id="pickReset"><i class="ti ti-refresh"></i>Reset round</button></div>
 </div></div>
 
+<div class="overlay hidden" id="pdfModal"><div class="modal" style="width:360px">
+  <h2>Export PDF</h2>
+  <div class="row" id="pdfPhotosRow"><label><input type="checkbox" id="pdfPhotos"> Include pupil photos</label></div>
+  <div class="row"><label><input type="checkbox" id="pdfRotate" checked> Board at the bottom (hold-to-chest view)</label></div>
+  <div class="foot"><button class="btn btn-quiet" id="pdfCancel">Cancel</button><button class="btn btn-primary" id="pdfGo"><i class="ti ti-file-download"></i>Export</button></div>
+</div></div>
+
 <div class="overlay hidden" id="gameOverlay"><div class="modal">
   <div id="gmSetup">
     <h2>Name game</h2>
@@ -386,7 +398,7 @@ const S = {
   dirty: false, mode: "view",
   pickedId: null,        // currently highlighted pupil
   showPhotos: localStorage.getItem("showPhotos") !== "0",
-  zoom: 1,
+  zoom: 1, flipped: false,
   photoUrls: {},
   editorTplId: null, editorSel: null, // room editor state
   drag: null
@@ -471,26 +483,59 @@ function deriveSurname(given, full){
   const parts = f.split(/\s+/);
   return parts.length > 1 ? parts.slice(1).join(" ") : "";
 }
-function dispName(p, len){
-  const s = (p.surname || "").trim();
-  if (!s) return p.given_name;
-  const part = s.slice(0, len);
-  return p.given_name + " " + part + (part.length < s.length ? "." : "");
+function properTok(sf, L){
+  const t = sf.trim().slice(0, Math.max(1, L));
+  return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+}
+function computeTokens(list, existing){
+  const tokens = new Array(list.length).fill("");
+  const groups = {};
+  list.forEach((r, i) => { const k = (r.given || "").toLowerCase().trim(); (groups[k] = groups[k] || { idx: [], taken: [] }).idx.push(i); });
+  (existing || []).forEach(p => {
+    const k = (p.given_name || "").toLowerCase().trim();
+    if (groups[k]) groups[k].taken.push((p.surname || "").toLowerCase());
+  });
+  Object.values(groups).forEach(g => {
+    const sfs = g.idx.map(i => (list[i].surnameFull || "").trim());
+    const lower = sfs.map(x => x.toLowerCase());
+    const distinct = Array.from(new Set(lower.filter(x => x)));
+    let L = 1;
+    const maxLen = Math.max(1, ...distinct.map(x => x.length).concat([1]));
+    while (L < maxLen){
+      const seen = new Set(); let clash = false;
+      distinct.forEach(x => { const pre = x.slice(0, L); if (seen.has(pre)) clash = true; seen.add(pre); });
+      if (!clash) break; L++;
+    }
+    const dupSeen = {};
+    g.idx.forEach((ri, j) => {
+      const sf = sfs[j];
+      if (!sf){ tokens[ri] = ""; return; }
+      const low = sf.toLowerCase();
+      let tok;
+      if (lower.filter(x => x === low).length > 1){
+        dupSeen[low] = (dupSeen[low] || 0) + 1;
+        tok = sf.charAt(0).toUpperCase() + dupSeen[low];
+      } else {
+        tok = properTok(sf, L);
+      }
+      let ext = L;
+      while (g.taken.includes(tok.toLowerCase()) && ext < sf.length){ ext++; tok = properTok(sf, ext); }
+      let n = 1;
+      while (g.taken.includes(tok.toLowerCase())){ tok = sf.charAt(0).toUpperCase() + n; n++; }
+      tokens[ri] = tok;
+      g.taken.push(tok.toLowerCase());
+    });
+  });
+  return tokens;
+}
+function dispName(p){
+  const t = (p.surname || "").trim();
+  if (!t) return p.given_name;
+  return p.given_name + " " + t + (/\d/.test(t) ? "" : ".");
 }
 function displayMap(){
-  const m = {}, groups = {};
-  S.pupils.forEach(p => { const k = (p.given_name || "").toLowerCase(); (groups[k] = groups[k] || []).push(p); });
-  Object.values(groups).forEach(g => {
-    let len = 1;
-    if (g.length > 1){
-      while (len < 10){
-        const seen = new Set(); let clash = false;
-        g.forEach(p => { const d = dispName(p, len); if (seen.has(d)) clash = true; seen.add(d); });
-        if (!clash) break; len++;
-      }
-    }
-    g.forEach(p => m[p.id] = dispName(p, len));
-  });
+  const m = {};
+  S.pupils.forEach(p => m[p.id] = dispName(p));
   return m;
 }
 
@@ -566,6 +611,7 @@ function cellSize(tpl){
 $("btnZoomIn").addEventListener("click", () => { S.zoom = Math.min(3, S.zoom * 1.2); renderPlan(); });
 $("btnZoomOut").addEventListener("click", () => { S.zoom = Math.max(0.4, S.zoom / 1.2); renderPlan(); });
 $("btnZoomFit").addEventListener("click", () => { S.zoom = 1; renderPlan(); });
+$("btnFlip").addEventListener("click", () => { S.flipped = !S.flipped; $("btnFlip").className = "btn " + (S.flipped ? "btn-outline" : "btn-quiet"); renderPlan(); });
 function avatarHTML(p, name, extra){
   const cell = window.__cell || 30;
   const circ = Math.max(20, Math.min(150, Math.round(cell * 0.95)));
@@ -588,6 +634,7 @@ function renderPlan(){
   if (!S.classId){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Create a class to begin (people icon, top right)."; renderTray(); return; }
   if (!tpl){ grid.style.width = grid.style.height = "0"; $("hint").textContent = "Choose or create a room layout (grid icon, top right)."; renderTray(); return; }
   const cell = cellSize(tpl); window.__cell = cell;
+  grid.classList.toggle("flipped", S.flipped);
   grid.style.width = tpl.grid_w * cell + "px";
   grid.style.height = tpl.grid_h * cell + "px";
   grid.style.backgroundSize = cell + "px " + cell + "px";
@@ -786,7 +833,7 @@ async function renderArchive(){
         <button class="btn btn-quiet" data-act="pdf">PDF</button>
         <button class="btn btn-outline" data-act="restore">Restore</button>
         <button class="btn btn-danger" data-act="del"><i class="ti ti-trash"></i></button></td>`;
-    tr.querySelector('[data-act=pdf]').addEventListener("click", () => exportPdf(pl));
+    tr.querySelector('[data-act=pdf]').addEventListener("click", () => openPdfModal(pl));
     tr.querySelector('[data-act=del]').addEventListener("click", async () => {
       if (!confirm(`Delete archived plan "${pl.name}"?`)) return;
       await q(sb.from("plans").delete().eq("id", pl.id), "Deleting"); renderArchive();
@@ -848,10 +895,24 @@ $("shGo").addEventListener("click", () => {
 function runShuffle(mode){
   const seats = allSeats(S.plan.template_id);
   const byKey = {}; seats.forEach(s => byKey[s.key] = s);
-  const freeSeats = seats.filter(s => S.assign[s.key] && !S.assign[s.key].pinned);
-  if (freeSeats.length < 2){ flashHint("Not enough unpinned pupils to shuffle."); return; }
-  const pool = freeSeats.map(s => S.assign[s.key].pupilId);
-  const pinnedEntries = Object.entries(S.assign).filter(([, a]) => a.pinned);
+  let freeSeats, pool, pinnedEntries, initial = false;
+  if (!Object.keys(S.assign).length){
+    if (!seats.length){ flashHint("Add tables to this room first (grid icon, top right)."); return; }
+    if (!S.pupils.length){ flashHint("No pupils in this class yet."); return; }
+    initial = true;
+    const cx = seats.reduce((a, s) => a + s.x + 1, 0) / seats.length;
+    const cy = seats.reduce((a, s) => a + s.y + 1, 0) / seats.length;
+    freeSeats = seats.slice()
+      .sort((a, b) => Math.hypot(a.x + 1 - cx, a.y + 1 - cy) - Math.hypot(b.x + 1 - cx, b.y + 1 - cy))
+      .slice(0, Math.min(S.pupils.length, seats.length));
+    pool = S.pupils.map(p => p.id);
+    pinnedEntries = [];
+  } else {
+    freeSeats = seats.filter(s => S.assign[s.key] && !S.assign[s.key].pinned);
+    if (freeSeats.length < 2){ flashHint("Not enough unpinned pupils to shuffle."); return; }
+    pool = freeSeats.map(s => S.assign[s.key].pupilId);
+    pinnedEntries = Object.entries(S.assign).filter(([, a]) => a.pinned);
+  }
   const pupilById = {}; S.pupils.forEach(p => pupilById[p.id] = p);
   const rulePairs = S.rules.map(r => [r.pupil_a, r.pupil_b]);
   const doubles = furnitureOf(S.plan.template_id).filter(f => f.type === "double");
@@ -860,7 +921,7 @@ function runShuffle(mode){
     const perm = pool.slice();
     for (let j = perm.length - 1; j > 0; j--){ const k = Math.floor(Math.random() * (j + 1)); [perm[j], perm[k]] = [perm[k], perm[j]]; }
     const cand = {}; pinnedEntries.forEach(([k, a]) => cand[k] = a);
-    freeSeats.forEach((s, j) => cand[s.key] = { pupilId: perm[j], pinned: false });
+    freeSeats.forEach((s, j) => { if (perm[j]) cand[s.key] = { pupilId: perm[j], pinned: false }; });
     const seatOf = {}; Object.entries(cand).forEach(([k, a]) => seatOf[a.pupilId] = byKey[k]);
     let hardOk = true, ruleDist = 0;
     for (const [a, b] of rulePairs){
@@ -886,7 +947,9 @@ function runShuffle(mode){
   }
   if (!best){ alert("No arrangement satisfies the hard rules (pins and never-next-to pairs). Try unpinning someone or removing a rule."); return; }
   S.assign = best; markChange(); renderPlan();
-  flashHint("Shuffled - press Save to keep it, or shuffle again.");
+  flashHint(initial
+    ? (S.pupils.length > seats.length ? "Allocated - not enough seats for everyone, the rest are in the tray. Press Save to keep it." : "Class allocated to seats - drag to adjust, then Save.")
+    : "Shuffled - press Save to keep it, or shuffle again.");
 }
 
 /* ---------- picker ---------- */
@@ -962,11 +1025,11 @@ function renderClassModal(){
   if (S.classId) sel.value = S.classId;
   const t = $("cmTable"); t.innerHTML = "";
   if (!S.classId) return;
-  t.innerHTML = "<tr><th>Given name</th><th>Surname</th><th>Gender</th><th></th></tr>";
+  t.innerHTML = "<tr><th>Given name</th><th>Initial(s)</th><th>Gender</th><th></th></tr>";
   S.pupils.forEach(p => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><input value="${esc(p.given_name)}" data-f="given_name" style="width:110px"></td>
-      <td><input value="${esc(p.surname || "")}" data-f="surname" style="width:150px"></td>
+      <td><input value="${esc(p.surname || "")}" data-f="surname" style="width:70px"></td>
       <td><select data-f="gender"><option value="M">M</option><option value="F">F</option><option value="N">N</option></select></td>
       <td style="text-align:right"><button class="btn btn-quiet"><i class="ti ti-trash"></i></button></td>`;
     tr.querySelector("[data-f=gender]").value = p.gender || "N";
@@ -987,8 +1050,9 @@ function renderClassModal(){
 $("cmAddPupil").addEventListener("click", async () => {
   if (!S.classId){ alert("Create or select a class first."); return; }
   const given = prompt("Given name:"); if (!given) return;
-  const full = prompt("Full name (forename and surname):", given) || given;
-  const rows = await q(sb.from("pupils").insert({ class_id: S.classId, given_name: given.trim(), full_name: full.trim(), surname: deriveSurname(given, full), gender: "N", absent: false }).select(), "Adding pupil");
+  const sf = prompt("Surname (used only to work out the initial - it is not stored):", "") || "";
+  const tok = computeTokens([{ given: given.trim(), surnameFull: sf.trim() }], S.pupils)[0];
+  const rows = await q(sb.from("pupils").insert({ class_id: S.classId, given_name: given.trim(), full_name: "", surname: tok, gender: "N", absent: false }).select(), "Adding pupil");
   S.pupils.push(rows[0]); renderClassModal();
 });
 $("cmImport").addEventListener("click", async () => {
@@ -1030,15 +1094,29 @@ function rowToPupil(cols){
 }
 let pendingMerge = null;
 function openMerge(rows){
-  const byFull = {}; S.pupils.forEach(p => byFull[(p.full_name || "").toLowerCase()] = p);
-  const incoming = new Set(rows.map(r => r.full.toLowerCase()));
-  const adds = rows.filter(r => !byFull[r.full.toLowerCase()]);
-  const removes = S.pupils.filter(p => !incoming.has((p.full_name || "").toLowerCase()));
+  const used = new Set();
+  const tokOf = p => ((p.surname || "").toLowerCase().replace(/[0-9]+$/, ""));
+  const adds = [];
+  rows.forEach(r => {
+    const g = (r.given || "").toLowerCase().trim();
+    const sf = deriveSurname(r.given, r.full).toLowerCase();
+    const cands = S.pupils.filter(p => !used.has(p.id) && (p.given_name || "").toLowerCase().trim() === g);
+    let m = null;
+    if (cands.length === 1) m = cands[0];
+    else if (cands.length > 1){
+      const fit = cands.filter(p => tokOf(p) && sf.indexOf(tokOf(p)) === 0);
+      fit.sort((a, b) => tokOf(b).length - tokOf(a).length);
+      if (fit.length === 1 || (fit.length > 1 && tokOf(fit[0]).length > tokOf(fit[1]).length)) m = fit[0];
+    }
+    if (m) used.add(m.id); else adds.push(r);
+  });
+  const removes = S.pupils.filter(p => !used.has(p.id));
   pendingMerge = { rows, adds, removes };
+  const ini = r => { const sf = deriveSurname(r.given, r.full); return r.given + (sf ? " " + sf.charAt(0).toUpperCase() + "." : ""); };
   const b = $("mergeBody");
-  b.innerHTML = `<p class="mini" style="margin-bottom:8px">${rows.length} rows read. ${adds.length} new pupil(s), ${removes.length} to remove, ${rows.length - adds.length} unchanged (they keep their seats).</p>`;
-  if (adds.length) b.innerHTML += "<p><strong style='font-weight:500'>New:</strong> " + adds.map(r => esc(r.given + " " + r.full.split(/\s+/).slice(-1))).join(", ") + "</p>";
-  if (removes.length) b.innerHTML += "<p style='margin-top:6px'><strong style='font-weight:500'>Removed:</strong> " + removes.map(p => esc(p.given_name + " " + (p.surname || ""))).join(", ") + "</p>";
+  b.innerHTML = `<p class="mini" style="margin-bottom:8px">${rows.length} rows read. ${adds.length} new pupil(s), ${removes.length} to remove, ${rows.length - adds.length} matched (they keep their seats).</p>`;
+  if (adds.length) b.innerHTML += "<p><strong style='font-weight:500'>New:</strong> " + adds.map(r => esc(ini(r))).join(", ") + "</p>";
+  if (removes.length) b.innerHTML += "<p style='margin-top:6px'><strong style='font-weight:500'>Removed:</strong> " + removes.map(p => esc(dispName(p))).join(", ") + "</p>";
   if (!adds.length && !removes.length) b.innerHTML += "<p class='mini'>Nothing to change.</p>";
   show("mergeModal");
 }
@@ -1051,7 +1129,8 @@ $("mergeApply").addEventListener("click", async () => {
 });
 async function applyImport(rows, adds, removes){
   if (!S.pupils.length){
-    const ins = rows.map(r => ({ class_id: S.classId, given_name: r.given, full_name: r.full, surname: deriveSurname(r.given, r.full), gender: r.gender, absent: false }));
+    const toks = computeTokens(rows.map(r => ({ given: r.given, surnameFull: deriveSurname(r.given, r.full) })), []);
+    const ins = rows.map((r, i) => ({ class_id: S.classId, given_name: r.given, full_name: "", surname: toks[i], gender: r.gender, absent: false }));
     const out = await q(sb.from("pupils").insert(ins).select(), "Importing pupils");
     S.pupils = out;
   } else {
@@ -1065,7 +1144,8 @@ async function applyImport(rows, adds, removes){
       markChange();
     }
     if (adds.length){
-      const ins = adds.map(r => ({ class_id: S.classId, given_name: r.given, full_name: r.full, surname: deriveSurname(r.given, r.full), gender: r.gender, absent: false }));
+      const toks = computeTokens(adds.map(r => ({ given: r.given, surnameFull: deriveSurname(r.given, r.full) })), S.pupils);
+      const ins = adds.map((r, i) => ({ class_id: S.classId, given_name: r.given, full_name: "", surname: toks[i], gender: r.gender, absent: false }));
       const out = await q(sb.from("pupils").insert(ins).select(), "Adding pupils");
       S.pupils = S.pupils.concat(out);
     }
@@ -1246,8 +1326,27 @@ document.addEventListener("pointerup", async () => {
 });
 
 /* ---------- PDF export ---------- */
-$("btnPdf").addEventListener("click", () => exportPdf(null));
-async function exportPdf(archivedPlan){
+let pendingExport = null;
+$("btnPdf").addEventListener("click", () => openPdfModal(null));
+function openPdfModal(archivedPlan){
+  if (!(archivedPlan || S.plan)){ flashHint("Nothing to export yet."); return; }
+  pendingExport = archivedPlan;
+  $("pdfPhotosRow").classList.toggle("hidden", !Object.keys(S.photoUrls).length);
+  $("pdfPhotos").checked = localStorage.getItem("pdfPhotos") === "1";
+  $("pdfRotate").checked = localStorage.getItem("pdfRotate") !== "0";
+  show("pdfModal");
+}
+$("pdfCancel").addEventListener("click", () => { pendingExport = null; hide("pdfModal"); });
+$("pdfGo").addEventListener("click", async () => {
+  localStorage.setItem("pdfPhotos", $("pdfPhotos").checked ? "1" : "0");
+  localStorage.setItem("pdfRotate", $("pdfRotate").checked ? "1" : "0");
+  const withPhotos = $("pdfPhotos").checked && Object.keys(S.photoUrls).length > 0;
+  const rot = $("pdfRotate").checked;
+  hide("pdfModal");
+  await exportPdf(pendingExport, withPhotos, rot);
+  pendingExport = null;
+});
+async function exportPdf(archivedPlan, withPhotos, rot){
   const plan = archivedPlan || S.plan;
   if (!plan){ flashHint("Nothing to export yet."); return; }
   const tpl = tplById(plan.template_id);
@@ -1266,6 +1365,7 @@ async function exportPdf(archivedPlan){
   g.style.width = tpl.grid_w * cellMm + "mm";
   g.style.height = tpl.grid_h * cellMm + "mm";
   g.style.border = "0.3mm solid #ccc";
+  g.classList.toggle("rot", !!rot);
   const names = displayMap();
   const fm = tpl.front || { x: 0, y: 0, w: 6 };
   const fmEl = document.createElement("div");
@@ -1273,8 +1373,6 @@ async function exportPdf(archivedPlan){
   fmEl.style.cssText = `left:${fm.x * cellMm}mm;top:${fm.y * cellMm}mm;width:${fm.w * cellMm}mm;height:${cellMm}mm;font-size:8pt`;
   fmEl.textContent = "Whiteboard - front";
   g.appendChild(fmEl);
-  let withPhotos = false;
-  if (Object.keys(S.photoUrls).length) withPhotos = confirm("Include pupil photos in the PDF?\n\nOK = with photos, Cancel = names only");
   furnitureOf(tpl.id).forEach(f => {
     const fp = footprint(f);
     const t = document.createElement("div");
@@ -1397,13 +1495,15 @@ async function extractPhotosFromPdf(file){
 function matchPupil(name){
   const n = (name || "").toLowerCase().trim();
   if (!n) return null;
-  let p = S.pupils.find(x => (x.full_name || "").toLowerCase().trim() === n);
-  if (p) return p;
   const parts = n.split(/\s+/), first = parts[0], last = parts[parts.length - 1];
-  const lastOf = x => ((x.surname || "").toLowerCase().trim().split(/\s+/).pop() || "");
-  p = S.pupils.find(x => x.given_name.toLowerCase() === first && lastOf(x) === last);
-  if (p) return p;
-  const cands = S.pupils.filter(x => lastOf(x) === last);
+  const tokOf = x => ((x.surname || "").toLowerCase().replace(/[0-9]+$/, ""));
+  let cands = S.pupils.filter(x => (x.given_name || "").toLowerCase().trim() === first);
+  if (cands.length === 1) return cands[0];
+  if (cands.length > 1){
+    const fit = cands.filter(x => tokOf(x) && last.indexOf(tokOf(x)) === 0);
+    return fit.length === 1 ? fit[0] : null;
+  }
+  cands = S.pupils.filter(x => tokOf(x) && last.indexOf(tokOf(x)) === 0);
   return cands.length === 1 ? cands[0] : null;
 }
 let pendingPhotos = null;
@@ -1512,10 +1612,6 @@ $("gmStart").addEventListener("click", async () => {
   $("gmSetup").classList.add("hidden"); $("gmPlay").classList.remove("hidden");
   nextQuestion();
 });
-function gameNamesFor(p){
-  const s = (p.surname || "").trim();
-  return { display: p.given_name + (s ? " " + s.split(/\s+/).pop().charAt(0).toUpperCase() + "." : ""), full: p.given_name + (s ? " " + s : "") };
-}
 function nextQuestion(){
   clearTimeout(G.timer); G.busy = false;
   G.qn++;
@@ -1549,7 +1645,7 @@ function nextQuestion(){
     $("gmChoices").innerHTML = "";
     options.forEach(p => {
       const b = document.createElement("button");
-      b.textContent = gameNamesFor(p).full;
+      b.textContent = dispName(p);
       b.addEventListener("click", () => { if (!G.busy) answer(p.id === G.cur.id, b); });
       $("gmChoices").appendChild(b);
     });
@@ -1564,14 +1660,13 @@ function submitFree(){
   if (G.busy) return;
   const raw = norm($("gmInput").value);
   if (!raw) return;
-  const p = G.cur, nm = gameNamesFor(p);
-  const given = norm(p.given_name);
-  const ok = raw === given || raw === norm(nm.full) || raw === norm(nm.display).replace(/[^a-z0-9 ]/g, "") || lev(raw, given) <= 1;
+  const given = norm(G.cur.given_name);
+  const ok = raw === given || raw === norm(dispName(G.cur)) || lev(raw, given) <= 1;
   answer(ok);
 }
 function answer(correct, btn){
   G.busy = true;
-  const p = G.cur, nm = gameNamesFor(p);
+  const p = G.cur, full = dispName(p);
   const cls = S.classes.find(c => c.id === p.class_id);
   const clsName = cls ? cls.name : "";
   const tentative = $("gmTent").checked;
@@ -1583,16 +1678,16 @@ function answer(correct, btn){
       G.misses[p.id].remaining--;
       if (G.misses[p.id].remaining <= 0) delete G.misses[p.id]; else G.misses[p.id].due = G.qn + 3 + Math.floor(Math.random() * 3);
     }
-    $("gmFeedback").innerHTML = `<span class="ok">Correct - ${esc(nm.full)}</span><span class="cls">${esc(clsName)}${tentative ? " - marked for practice" : ""}</span>`;
+    $("gmFeedback").innerHTML = `<span class="ok">Correct - ${esc(full)}</span><span class="cls">${esc(clsName)}${tentative ? " - marked for practice" : ""}</span>`;
     if (btn) btn.classList.add("right");
     $("gmPhoto").classList.add("gmPop"); setTimeout(() => $("gmPhoto").classList.remove("gmPop"), 400);
     confettiBurst();
   } else {
     G.streak = 0; G.score = Math.max(0, G.score - 5);
     G.misses[p.id] = { due: G.qn + 3 + Math.floor(Math.random() * 3), remaining: 2 };
-    $("gmFeedback").innerHTML = `<span class="no">It is ${esc(nm.full)}</span><span class="cls">${esc(clsName)}</span>`;
+    $("gmFeedback").innerHTML = `<span class="no">It is ${esc(full)}</span><span class="cls">${esc(clsName)}</span>`;
     if (btn) btn.classList.add("wrong");
-    if (G.mode === "mc") Array.from($("gmChoices").children).forEach(b => { if (b.textContent === nm.full) b.classList.add("right"); });
+    if (G.mode === "mc") Array.from($("gmChoices").children).forEach(b => { if (b.textContent === full) b.classList.add("right"); });
     const card = $("gameOverlay").querySelector(".modal");
     card.classList.add("gmShake"); setTimeout(() => card.classList.remove("gmShake"), 450);
   }
